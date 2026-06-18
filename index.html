@@ -721,19 +721,46 @@ function getLatestNMSplit(recsArr){
 }
 
 function loadDataViaJSONP(sheetName,callbackFn){
-  var cbName='jsonpCb_'+Date.now();
-  var scriptEl=document.createElement('script');
-  window[cbName]=function(data){delete window[cbName];if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);callbackFn(null,data);};
-  scriptEl.onerror=function(){delete window[cbName];if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);callbackFn(new Error('JSONP failed'));};
-  scriptEl.src=APPS_URL+'?sheet='+sheetName+'&callback='+cbName;
-  document.head.appendChild(scriptEl);
+  // Try fetch first (works when Apps Script deployed as "Anyone")
+  fetch(APPS_URL+'?sheet='+sheetName,{redirect:'follow'})
+    .then(function(resp){
+      if(!resp.ok) throw new Error('HTTP '+resp.status);
+      return resp.json();
+    })
+    .then(function(data){
+      callbackFn(null,data);
+    })
+    .catch(function(fetchErr){
+      // Fallback to JSONP if fetch fails (e.g. CORS issue)
+      var cbName='jsonpCb_'+Date.now();
+      var scriptEl=document.createElement('script');
+      var timer=setTimeout(function(){
+        delete window[cbName];
+        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+        callbackFn(new Error('Timeout'));
+      },20000);
+      window[cbName]=function(data){
+        clearTimeout(timer);
+        delete window[cbName];
+        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+        callbackFn(null,data);
+      };
+      scriptEl.onerror=function(){
+        clearTimeout(timer);
+        delete window[cbName];
+        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+        callbackFn(new Error('JSONP failed'));
+      };
+      scriptEl.src=APPS_URL+'?sheet='+sheetName+'&callback='+cbName;
+      document.head.appendChild(scriptEl);
+    });
 }
 
 function refreshData(){
   var btn=document.getElementById('refresh-btn');
   btn.classList.add('loading');btn.textContent='Refreshing...';
   loadDataViaJSONP('database',function(err,raw){
-    if(err||!raw||!raw.rows){btn.textContent='Retry';btn.classList.remove('loading');alert('Refresh failed. Please update your Apps Script with the JSONP version and redeploy.');return;}
+    if(err||!raw||!raw.rows){btn.textContent='Retry';btn.classList.remove('loading');alert('Refresh failed. Please check:\n1. Your Apps Script is deployed (Extensions > Apps Script > Deploy)\n2. Access is set to "Anyone"\n3. You are connected to the internet');return;}
     D=processRaw(raw.rows);
     Object.keys(MS).forEach(function(k){MS[k].sel.clear();});
     document.getElementById('f-from').innerHTML='';
