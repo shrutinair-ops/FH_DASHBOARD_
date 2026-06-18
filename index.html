@@ -721,39 +721,30 @@ function getLatestNMSplit(recsArr){
 }
 
 function loadDataViaJSONP(sheetName,callbackFn){
-  // Try fetch first (works when Apps Script deployed as "Anyone")
-  fetch(APPS_URL+'?sheet='+sheetName,{redirect:'follow'})
-    .then(function(resp){
-      if(!resp.ok) throw new Error('HTTP '+resp.status);
-      return resp.json();
-    })
-    .then(function(data){
-      callbackFn(null,data);
-    })
-    .catch(function(fetchErr){
-      // Fallback to JSONP if fetch fails (e.g. CORS issue)
-      var cbName='jsonpCb_'+Date.now();
-      var scriptEl=document.createElement('script');
-      var timer=setTimeout(function(){
-        delete window[cbName];
-        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
-        callbackFn(new Error('Timeout'));
-      },20000);
-      window[cbName]=function(data){
-        clearTimeout(timer);
-        delete window[cbName];
-        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
-        callbackFn(null,data);
-      };
-      scriptEl.onerror=function(){
-        clearTimeout(timer);
-        delete window[cbName];
-        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
-        callbackFn(new Error('JSONP failed'));
-      };
-      scriptEl.src=APPS_URL+'?sheet='+sheetName+'&callback='+cbName;
-      document.head.appendChild(scriptEl);
-    });
+  var cbName='jsonpCb_'+Date.now();
+  var scriptEl=document.createElement('script');
+  var done=false;
+  // 30 second timeout - only failure mechanism (ignore onerror which fires on redirect)
+  var timer=setTimeout(function(){
+    if(done) return;
+    done=true;
+    delete window[cbName];
+    if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+    callbackFn(new Error('Timeout after 30s'));
+  },30000);
+  window[cbName]=function(data){
+    if(done) return;
+    done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+    callbackFn(null,data);
+  };
+  // NOTE: we intentionally do NOT set onerror here because Apps Script
+  // returns a 302 redirect which browsers report as a script load error
+  // even though the callback fires successfully after following the redirect.
+  scriptEl.src=APPS_URL+'?sheet='+sheetName+'&callback='+cbName;
+  document.head.appendChild(scriptEl);
 }
 
 function refreshData(){
