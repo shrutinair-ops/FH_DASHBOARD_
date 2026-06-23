@@ -239,17 +239,23 @@ table.dt{width:100%;border-collapse:collapse;font-size:12.5px}
 
 
 /* Visit Category comparison cards */
-.cmp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
-@media(max-width:700px){.cmp-grid{grid-template-columns:1fr 1fr}}
-.cmp-card{background:#f8f9fc;border-radius:12px;padding:14px 16px;border:1px solid #e8ecf4}
-.cmp-lbl{font-size:11.5px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px}
-.cmp-row{display:flex;align-items:center;justify-content:space-between;gap:6px}
-.cmp-side{display:flex;flex-direction:column;align-items:center;gap:4px}
-.cmp-tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;letter-spacing:.4px}
-.cmp-tag.nm{background:#eeeeff;color:#6c63ff}
-.cmp-tag.mo{background:#e8faf3;color:#22c07e}
-.cmp-val{font-size:20px;font-weight:800;color:#1a1a2e}
-.cmp-mid{font-size:14px;font-weight:700;text-align:center;min-width:44px}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media(max-width:600px){.cmp-grid{grid-template-columns:1fr}}
+.vc-group-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
+.vc-group-head{font-size:14px;font-weight:700;padding:12px 18px;display:flex;align-items:center;gap:10px}
+.nm-head{background:#eeeeff;color:#4a43c9;border-bottom:2px solid #6c63ff}
+.mo-head{background:#e8faf3;color:#0a6e40;border-bottom:2px solid #22c07e}
+.vc-group-count{font-size:28px;font-weight:800;padding:10px 18px 4px}
+.vc-group-count.nm{color:#6c63ff}
+.vc-group-count.mo{color:#22c07e}
+.vc-metrics{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#f0f0f5;border-top:1px solid #f0f0f5}
+.vc-metric{background:var(--card);padding:12px 16px}
+.vc-metric-lbl{font-size:10.5px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}
+.vc-metric-val{font-size:18px;font-weight:800;color:#1a1a2e;line-height:1.1}
+.vc-metric-val.green{color:#22c07e}
+.vc-metric-val.amber{color:#f5a623}
+.vc-metric-val.purple{color:#6c63ff}
+.vc-metric-sub{font-size:10.5px;color:#aaa;margin-top:2px}
 
 </style>
 </head>
@@ -1847,7 +1853,7 @@ function renderVisitCat(recs) {
     prd.forEach(function(r){var m=r[F.MONTH];if(!monthProd[m])monthProd[m]=0;monthProd[m]+=r[F.PROD];});
     var monthVals=Object.values(monthProd);
     var avgProd=monthVals.length?Math.round(monthVals.reduce(function(s,v){return s+v;},0)/monthVals.length):0;
-    return {mills:millSet.size,tot:tot,win:win,winPct:winPct,blwPct:blwPct,
+    return {mills:millSet.size,tot:tot,win:win,blw:blw,winPct:winPct,blwPct:blwPct,
             avgIch:avgIch,consPct:consPct,medDev:medDev,avgProd:avgProd};
   }
 
@@ -1868,13 +1874,40 @@ function renderVisitCat(recs) {
       '<\/div>'+
     '<\/div>';
   }
+  function metricTile(lbl,val,cls,sub){
+    return '<div class="vc-metric">'+
+      '<div class="vc-metric-lbl">'+lbl+'<\/div>'+
+      '<div class="vc-metric-val '+(cls||'')+'">'+val+'<\/div>'+
+      (sub?'<div class="vc-metric-sub">'+sub+'<\/div>':'')+
+    '<\/div>';
+  }
   var cardsHtml=
-    cmpCard('Mills',ns.mills,ms.mills,'',true)+
-    cmpCard('Within Range %',ns.winPct+'%',ms.winPct+'%','',true)+
-    cmpCard('Avg iCheck',ns.avgIch,ms.avgIch,' mg/kg',false)+
-    cmpCard('Consistent Mills %',ns.consPct+'%',ms.consPct+'%','',true)+
-    cmpCard('Below Range %',ns.blwPct+'%',ms.blwPct+'%','',false)+
-    cmpCard('Median Prod Dev',ns.medDev+'%',ms.medDev+'%','',true);
+    '<div class="vc-group-card">'+
+      '<div class="vc-group-head nm-head">● Non-Monthly Visit Mills<\/div>'+
+      '<div class="vc-group-count nm">'+ns.mills+'<\/div>'+
+      '<div style="font-size:11px;color:#888;padding:0 18px 10px">mills on non-monthly schedule<\/div>'+
+      '<div class="vc-metrics">'+
+        metricTile('Within Range',ns.winPct+'%','green',ns.win+' of '+ns.tot+' records')+
+        metricTile('Avg iCheck',ns.avgIch+' mg/kg','','')+
+        metricTile('Consistent Mills',ns.consPct+'%','purple','100% in-range all months')+
+        metricTile('Below Range',ns.blwPct+'%','amber',ns.blw+' records')+
+        metricTile('Median Prod Dev',ns.medDev+'%','','')+
+        metricTile('iCheck Records',ns.tot,'','')+
+      '<\/div>'+
+    '<\/div>'+
+    '<div class="vc-group-card">'+
+      '<div class="vc-group-head mo-head">● Monthly Visit Mills<\/div>'+
+      '<div class="vc-group-count mo">'+ms.mills+'<\/div>'+
+      '<div style="font-size:11px;color:#888;padding:0 18px 10px">mills on monthly schedule<\/div>'+
+      '<div class="vc-metrics">'+
+        metricTile('Within Range',ms.winPct+'%','green',ms.win+' of '+ms.tot+' records')+
+        metricTile('Avg iCheck',ms.avgIch+' mg/kg','','')+
+        metricTile('Consistent Mills',ms.consPct+'%','purple','100% in-range all months')+
+        metricTile('Below Range',ms.blwPct+'%','amber',ms.blw+' records')+
+        metricTile('Median Prod Dev',ms.medDev+'%','','')+
+        metricTile('iCheck Records',ms.tot,'','')+
+      '<\/div>'+
+    '<\/div>';
   setHTML('vc-cards', cardsHtml);
 
   // ── Head-to-Head table ─────────────────────────────────────────────────────
