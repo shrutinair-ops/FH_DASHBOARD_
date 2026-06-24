@@ -778,43 +778,62 @@ function getLatestNMSplit(recsArr){
 }
 
 function loadDataViaJSONP(sheetName,callbackFn){
-  var cbName='jsonpCb_'+Date.now();
-  var scriptEl=document.createElement('script');
-  var done=false;
-  // 30 second timeout - only failure mechanism (ignore onerror which fires on redirect)
-  var timer=setTimeout(function(){
-    if(done) return;
-    done=true;
-    delete window[cbName];
-    if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
-    callbackFn(new Error('Timeout after 30s'));
-  },30000);
-  window[cbName]=function(data){
-    if(done) return;
-    done=true;
-    clearTimeout(timer);
-    delete window[cbName];
-    if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
-    callbackFn(null,data);
-  };
-  // NOTE: we intentionally do NOT set onerror here because Apps Script
-  // returns a 302 redirect which browsers report as a script load error
-  // even though the callback fires successfully after following the redirect.
-  scriptEl.src=APPS_URL+'?sheet='+sheetName+'&callback='+cbName;
-  document.head.appendChild(scriptEl);
+  // Try fetch() first - works when Apps Script access is set to "Anyone"
+  fetch(APPS_URL+'?sheet='+sheetName,{method:'GET',mode:'cors'})
+    .then(function(r){
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      return r.json();
+    })
+    .then(function(data){callbackFn(null,data);})
+    .catch(function(){
+      // Fallback: JSONP with 60s timeout
+      var cbName='jsonpCb_'+Date.now();
+      var scriptEl=document.createElement('script');
+      var done=false;
+      var timer=setTimeout(function(){
+        if(done)return;
+        done=true;
+        delete window[cbName];
+        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+        callbackFn(new Error('timeout'));
+      },60000);
+      window[cbName]=function(data){
+        if(done)return;
+        done=true;
+        clearTimeout(timer);
+        delete window[cbName];
+        if(scriptEl.parentNode)scriptEl.parentNode.removeChild(scriptEl);
+        callbackFn(null,data);
+      };
+      scriptEl.src=APPS_URL+'?sheet='+sheetName+'&callback='+cbName;
+      document.head.appendChild(scriptEl);
+    });
 }
 
+function showToast(msg,col){
+  var t=document.getElementById('refresh-toast');
+  if(!t){t=document.createElement('div');t.id='refresh-toast';
+    t.style.cssText='position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;color:#fff;z-index:9999;max-width:320px;box-shadow:0 4px 12px rgba(0,0,0,.2);transition:opacity .4s';
+    document.body.appendChild(t);}
+  t.textContent=msg;t.style.background=col||'#22c07e';t.style.opacity='1';
+  clearTimeout(t._hide);t._hide=setTimeout(function(){t.style.opacity='0';},4000);
+}
 function refreshData(){
   var btn=document.getElementById('refresh-btn');
   btn.classList.add('loading');btn.textContent='Refreshing...';
+  showToast('Fetching latest data from sheet...','#6c63ff');
   loadDataViaJSONP('database',function(err,raw){
-    if(err||!raw||!raw.rows){btn.textContent='Retry';btn.classList.remove('loading');alert('Refresh failed. Please check:\n1. Your Apps Script is deployed (Extensions > Apps Script > Deploy)\n2. Access is set to "Anyone"\n3. You are connected to the internet');return;}
+    btn.textContent='↻ Refresh';btn.classList.remove('loading');
+    if(err||!raw||!raw.rows){
+      showToast('Live refresh unavailable — the dashboard auto-updates daily via GitHub Actions. Data shown is from the last scheduled update.','#f5a623');
+      return;
+    }
     D=processRaw(raw.rows);
     Object.keys(MS).forEach(function(k){MS[k].sel.clear();});
     document.getElementById('f-from').innerHTML='';
     document.getElementById('f-to').innerHTML='';
     initSelects();applyFilters();
-    btn.textContent='Refresh';btn.classList.remove('loading');
+    showToast('Data refreshed successfully ✔','#22c07e');
   });
 }
 
@@ -2042,7 +2061,6 @@ function renderVisitCat(recs) {
 
 initSelects();
 applyFilters();
-
 
 
 
