@@ -1,0 +1,43 @@
+name: Refresh Dashboard Data
+
+on:
+  schedule:
+    # Runs every day at 6:00 AM IST (00:30 UTC)
+    - cron: '30 0 * * *'
+  # Runs whenever you push to main branch
+  push:
+    branches: [ main ]
+  # Allows manual trigger from GitHub UI (Actions tab → Run workflow)
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests pandas numpy pytz
+
+      - name: Fetch data and rebuild dashboard
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+        run: python scripts/rebuild_dashboard.py
+
+      - name: Commit and push updated dashboard
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add index.html
+          git diff --staged --quiet || git commit -m "Auto-refresh: $(date +'%d %b %Y %H:%M IST')"
+          git push
