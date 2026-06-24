@@ -269,19 +269,32 @@ rev_count = len(reversions)
 rev_mills = len(set(r['mc'] for r in reversions))
 html_part  = html[:apps_idx]
 last_gt    = html_part.rfind('>')
-clean_html = html_part[:last_gt+1]
+
+# CRITICAL: strip any trailing <script> tag from HTML part
+# (avoids double <script><script> bug that breaks the dashboard)
+clean_html = re.sub(r'<script[^>]*>\s*$', '', html_part[:last_gt+1]).rstrip()
+
+# Update reversion count
 clean_html = re.sub(
     r'\(\d+ events across \d+ mills, independent of global filters\)',
     f'({rev_count} events across {rev_mills} mills, independent of global filters)',
     clean_html
 )
 
-# Restore CDN script tag if needed
+# Ensure CDN script tag is present
 if 'chart.umd.js' not in clean_html:
     clean_html = clean_html.replace('</title>\n<style>',
         '</title>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>\n<style>')
+    clean_html = clean_html.replace('</title>\n</script>\n<style>',
+        '</title>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>\n<style>')
 
 new_html = clean_html + '\n<script>\n' + new_js + '\n</script>\n</body>\n</html>'
+
+# Verify no double script tags
+import re as re2
+opens  = len(re2.findall(r'<script[^>]*>', new_html))
+closes = len(re2.findall(r'</script>', new_html))
+print(f"Script tags: {opens} opens, {closes} closes — {'OK' if opens==closes else 'MISMATCH - check HTML'}")
 
 with open('index.html', 'w') as f:
     f.write(new_html)
