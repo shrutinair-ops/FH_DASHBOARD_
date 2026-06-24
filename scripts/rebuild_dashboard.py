@@ -272,7 +272,7 @@ last_gt    = html_part.rfind('>')
 
 # CRITICAL: strip any trailing <script> tag from HTML part
 # (avoids double <script><script> bug that breaks the dashboard)
-clean_html = re.sub(r'<script[^>]*>\s*$', '', html_part[:last_gt+1]).rstrip()
+clean_html = re.sub(r'(\s*<script[^>]*>)+\s*$', '', html_part[:last_gt+1]).rstrip()
 
 # Update reversion count
 clean_html = re.sub(
