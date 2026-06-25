@@ -7,8 +7,14 @@ on:
   # Runs whenever you push to main branch
   push:
     branches: [ main ]
-  # Allows manual trigger from GitHub UI (Actions tab → Run workflow)
+  # Allows manual trigger from GitHub UI
   workflow_dispatch:
+
+# This keeps the workflow active - GitHub disables scheduled workflows
+# on repos with no activity for 60 days. This setting prevents that.
+concurrency:
+  group: refresh
+  cancel-in-progress: false
 
 jobs:
   refresh:
@@ -19,10 +25,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
 
@@ -39,5 +45,6 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add index.html
-          git diff --staged --quiet || git commit -m "Auto-refresh: $(date +'%d %b %Y %H:%M IST')"
+          # Always commit with timestamp so repo stays active
+          git commit -m "Auto-refresh: $(date +'%d %b %Y %H:%M UTC')" || echo "No changes to commit"
           git push
