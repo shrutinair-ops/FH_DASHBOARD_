@@ -2,18 +2,13 @@ name: Refresh Dashboard Data
 
 on:
   schedule:
-    # Runs every day at 6:00 AM IST (00:30 UTC)
     - cron: '30 0 * * *'
-  # Runs whenever you push to main branch
   push:
     branches: [ main ]
-  # Allows manual trigger from GitHub UI
   workflow_dispatch:
 
-# This keeps the workflow active - GitHub disables scheduled workflows
-# on repos with no activity for 60 days. This setting prevents that.
 concurrency:
-  group: refresh
+  group: refresh-dashboard
   cancel-in-progress: false
 
 jobs:
@@ -45,6 +40,7 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add index.html
-          # Always commit with timestamp so repo stays active
           git commit -m "Auto-refresh: $(date +'%d %b %Y %H:%M UTC')" || echo "No changes to commit"
+          # Pull with rebase before push to avoid conflicts from manual uploads
+          git pull --rebase origin main || true
           git push
