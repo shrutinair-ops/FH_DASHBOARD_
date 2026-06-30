@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 rebuild_dashboard.py
-Fetches latest data from Google Apps Script, rebuilds all embedded JSON
-blobs (EMBEDDED, REVERSIONS, ALL_FLAGS) in index.html, and saves the file.
-Run by GitHub Actions daily — keeps the dashboard permanently up to date.
+Fetches latest data from Google Apps Script, rebuilds the EMBEDDED data
+blob in index.html to match the CURRENT dashboard schema exactly:
+  - launch_months, age_labels (6-bucket), ANN_BM (rolling 12-month benchmark)
+  - QO = SurveyCTO first, fallback to original, Subrajit name normalized
+Run by GitHub Actions daily.
 """
 
 import os, sys, json, re, urllib.request
@@ -15,7 +17,6 @@ if not APPS_URL:
     print("ERROR: APPS_SCRIPT_URL environment variable not set")
     sys.exit(1)
 
-# ── Fetch raw data ─────────────────────────────────────────────────────────────
 print("Fetching data from Apps Script...")
 try:
     url = APPS_URL + "?sheet=database&callback=__data__"
@@ -38,16 +39,22 @@ df['Icheck']          = pd.to_numeric(df['Icheck result  (mg/kg)'], errors='coer
 df['Beneficiaries']   = pd.to_numeric(df['Beneficiaries reached'], errors='coerce')
 df['ProdDev']         = pd.to_numeric(df['% Deviation from 3-Month Avg'], errors='coerce')
 df['Avg3M']           = pd.to_numeric(df['Avg Production Last 3 Months (MT)'], errors='coerce')
-df['qo_orig']         = df['Quality Officer'].str.strip().fillna('')
-df['qo_cto']          = df['Quality Officer from SurveyCTO'].str.strip().fillna('')
-df['qo_final']        = np.where(df['qo_cto'] != '', df['qo_cto'], df['qo_orig'])
-df['nm_flag']         = df['Selected for Non-Monthly Visit'].map({'Yes':1,'No':0}).fillna(0).astype(int)
-df['launch_age_months'] = ((df['Month_IST'] - df['launch_date_IST']).dt.days / 30.44).round(0)
+
+# QO: SurveyCTO first, fallback to original, normalize known spelling variants
+df['qo_cto']    = df['Quality Officer from SurveyCTO'].str.strip().fillna('')
+df['qo_orig']   = df['Quality Officer'].str.strip().fillna('')
+df['qo_final']  = np.where(df['qo_cto'] != '', df['qo_cto'], df['qo_orig'])
+df['qo_final']  = df['qo_final'].str.replace('Subrajit Majumder', 'Subrajit Mujumder', regex=False)
+
+df['nm_flag']   = df['Selected for Non-Monthly Visit'].map({'Yes': 1, 'No': 0}).fillna(0).astype(int)
+df['launch_age_months'] = ((df['Month_IST'] - df['launch_date_IST']).dt.days / 30.44)
 df = df[df['Mill Code'].notna() & (df['Mill Code'] != '')].copy()
 
 def age_bucket(a):
     if pd.isna(a) or a < 0: return 'Unknown'
-    elif a <= 6:  return '0-6 months'
+    elif a <= 2:  return '0-2 months'
+    elif a <= 4:  return '2-4 months'
+    elif a <= 6:  return '4-6 months'
     elif a <= 12: return '6-12 months'
     elif a <= 24: return '12-24 months'
     else:         return '24+ months'
@@ -61,7 +68,6 @@ RCA_COLS = {
     'Premix':      'RCA: Premix Issue',
     'No Issue':    'RCA: No Issue / Retesting',
 }
-
 def rca_bits(row):
     b = 0
     for i, col in enumerate(RCA_COLS.values()):
@@ -70,16 +76,13 @@ def rca_bits(row):
 
 def ich_s(v):
     if pd.isna(v) or v == 0: return 0
-    if v < 14:    return 1
-    if v <= 21.25:return 2
-    if v <= 28:   return 3
+    if v < 14:     return 1
+    if v <= 21.25: return 2
+    if v <= 28:    return 3
     return 4
 
-# ── Determine month cutoff ─────────────────────────────────────────────────────
-# Include up to latest month in data (IST)
 max_month = df['MonthStr'].max()
 print(f"Data runs to: {max_month} (IST)")
-
 base = df[(df['MonthStr'] >= '2022-07') & (df['MonthStr'] <= max_month)].copy()
 print(f"Base records: {len(base)}")
 
@@ -91,12 +94,22 @@ terminated = int((latest_per_mill['Mill Stage'] == 'Terminated').sum())
 states_n   = int(latest_per_mill['State Name'].nunique())
 clusters_n = int(latest_per_mill['Cluster Name'].nunique())
 
-# Active mills = mills with production in the last month that has production data
 prod_months = df[df['Production'] > 0].groupby('MonthStr').size()
 last_prod_month = prod_months.index[-1] if len(prod_months) else max_month
 active_mills = int(df[(df['MonthStr'] == last_prod_month) & (df['Production'] > 0)]['Mill Code'].nunique())
-print(f"Pipeline: Launched={launched}, Pre-Launch={pre_launch}, Terminated={terminated}")
-print(f"Active mills as of {last_prod_month}: {active_mills}")
+print(f"Pipeline: Launched={launched}, Pre-Launch={pre_launch}, Terminated={terminated}, Active={active_mills}")
+
+# ── Rolling 12-month production benchmark per mill ─────────────────────────────
+base_sorted = base.sort_values(['Mill Code', 'MonthStr'])
+ann_benchmark = {}
+for mc, grp in base_sorted.groupby('Mill Code'):
+    grp = grp.reset_index(drop=True)
+    prods = grp[['MonthStr', 'Production']].copy()
+    prods['prod_nz'] = prods['Production'].where(prods['Production'] > 0)
+    for i, row in prods.iterrows():
+        prior = prods[prods['MonthStr'] < row['MonthStr']].tail(12)
+        valid = prior['prod_nz'].dropna()
+        ann_benchmark[(mc, row['MonthStr'])] = round(valid.mean(), 1) if len(valid) >= 3 else None
 
 # ── Build lookup tables ────────────────────────────────────────────────────────
 states      = sorted(base['State Name'].dropna().unique().tolist())
@@ -108,16 +121,26 @@ pos_list    = sorted([p for p in base['Program Officer'].str.strip().fillna('').
 cap_cats    = ['Below 100 MT/Month','100-300 MT/Month','300-1000 MT/Month','More than 1000 MT/ Month']
 months_list = sorted(base['MonthStr'].unique().tolist())
 
-state_idx   = {s:i for i,s in enumerate(states)}
-cluster_idx = {c:i for i,c in enumerate(clusters)}
-mill_idx    = {m:i for i,m in enumerate(mills)}
-qo_idx      = {q:i for i,q in enumerate(qos)}
-po_idx      = {p:i for i,p in enumerate(pos_list)}
-cap_idx     = {c:i for i,c in enumerate(cap_cats)}
-month_idx   = {m:i for i,m in enumerate(months_list)}
-age_idx_map = {'0-6 months':0,'6-12 months':1,'12-24 months':2,'24+ months':3,'Unknown':4}
+# Launch months across ALL mills (for the "Launched By" filter)
+lm_raw = df['launch_date_IST'].dt.strftime('%Y-%m').dropna()
+all_launch_months = sorted([m for m in lm_raw.unique() if m >= '2019-01'])
+mill_launch = {}
+for mc, grp in df.groupby('Mill Code'):
+    lm = grp['launch_date_IST'].dt.strftime('%Y-%m').dropna()
+    if len(lm): mill_launch[mc] = lm.iloc[0]
 
-# ── Build records ──────────────────────────────────────────────────────────────
+state_idx   = {s: i for i, s in enumerate(states)}
+cluster_idx = {c: i for i, c in enumerate(clusters)}
+mill_idx    = {m: i for i, m in enumerate(mills)}
+qo_idx      = {q: i for i, q in enumerate(qos)}
+po_idx      = {p: i for i, p in enumerate(pos_list)}
+cap_idx     = {c: i for i, c in enumerate(cap_cats)}
+month_idx   = {m: i for i, m in enumerate(months_list)}
+age_idx_map = {'0-2 months':0,'2-4 months':1,'4-6 months':2,'6-12 months':3,'12-24 months':4,'24+ months':5,'Unknown':6}
+launch_month_idx = {m: i for i, m in enumerate(all_launch_months)}
+
+# ── Build records (17 fields, matches F object in dashboard JS) ───────────────
+# [MONTH,MILL,STATE,CLUSTER,CAP,AGE,ICHECK,ICHS,PROD,PDEV,NM,RCA,BENE,AVG3M,QO,PO,LAUNCH_M,ANN_BM]
 records = []
 for _, row in base.iterrows():
     mc = row['Mill Code']; ms = row['MonthStr']
@@ -127,26 +150,31 @@ for _, row in base.iterrows():
     pdev  = None if pd.isna(row['ProdDev']) else round(float(row['ProdDev']), 1)
     bene  = None if (pd.isna(row['Beneficiaries']) or row['Beneficiaries'] == 0) else float(row['Beneficiaries'])
     avg3m = None if (pd.isna(row['Avg3M']) or row['Avg3M'] == 0) else round(float(row['Avg3M']), 1)
+    ann_bm = ann_benchmark.get((mc, ms))
     qo = row['qo_final']
     po = row['Program Officer'].strip() if pd.notna(row['Program Officer']) else ''
+    lm = mill_launch.get(mc)
+    lm_idx = launch_month_idx.get(lm, -1) if lm else -1
     records.append([
         month_idx[ms], mill_idx[mc],
         state_idx.get(row['State Name'], -1),
         cluster_idx.get(row['Cluster Name'], -1),
         cap_idx.get(row['Mill Capacity Category'], -1),
-        age_idx_map.get(row['age_bucket'], 4),
+        age_idx_map.get(row['age_bucket'], 6),
         ich_v, ich_s(row['Icheck']),
         prod, pdev, int(row['nm_flag']),
         rca_bits(dict(row)),
         bene, avg3m,
-        qo_idx.get(qo, -1),
-        po_idx.get(po, -1),
+        qo_idx.get(qo, -1), po_idx.get(po, -1),
+        lm_idx, ann_bm
     ])
 
 embedded = {
     'months': months_list, 'states': states, 'clusters': clusters,
     'mills': mills, 'mill_names': mill_names, 'cap_cats': cap_cats,
     'rca_labels': list(RCA_COLS.keys()), 'qos': qos, 'pos': pos_list,
+    'launch_months': all_launch_months,
+    'age_labels': ['0-2 months','2-4 months','4-6 months','6-12 months','12-24 months','24+ months'],
     'pipeline': {
         'launched': launched, 'pre_launch': pre_launch, 'terminated': terminated,
         'active': active_mills, 'states': states_n, 'clusters': clusters_n
@@ -154,7 +182,7 @@ embedded = {
     'records': records,
 }
 embedded_json = json.dumps(embedded, separators=(',', ':'))
-print(f"EMBEDDED: {len(embedded_json)//1024}KB, {len(records)} records")
+print(f"EMBEDDED: {len(embedded_json)//1024}KB, {len(records)} records, {len(all_launch_months)} launch months")
 
 # ── Build ALL_FLAGS ────────────────────────────────────────────────────────────
 all_m = months_list
@@ -260,28 +288,22 @@ new_js = (
     'const ALL_FLAGS='  + flags_json    + ';\n' +
     js[f_pos:]
 )
-
-# Escape </ sequences in JS
 new_js = new_js.replace('</', '<\\/')
 
-# Update reversion count in HTML
 rev_count = len(reversions)
 rev_mills = len(set(r['mc'] for r in reversions))
 html_part  = html[:apps_idx]
 last_gt    = html_part.rfind('>')
 
-# CRITICAL: strip any trailing <script> tag from HTML part
-# (avoids double <script><script> bug that breaks the dashboard)
+# CRITICAL: strip ALL trailing <script> tags (avoids double <script><script> bug)
 clean_html = re.sub(r'(\s*<script[^>]*>)+\s*$', '', html_part[:last_gt+1]).rstrip()
 
-# Update reversion count
 clean_html = re.sub(
     r'\(\d+ events across \d+ mills, independent of global filters\)',
     f'({rev_count} events across {rev_mills} mills, independent of global filters)',
     clean_html
 )
 
-# Ensure CDN script tag is present
 if 'chart.umd.js' not in clean_html:
     clean_html = clean_html.replace('</title>\n<style>',
         '</title>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>\n<style>')
@@ -290,17 +312,15 @@ if 'chart.umd.js' not in clean_html:
 
 new_html = clean_html + '\n<script>\n' + new_js + '\n</script>\n</body>\n</html>'
 
-# Verify no double script tags
-import re as re2
-opens  = len(re2.findall(r'<script[^>]*>', new_html))
-closes = len(re2.findall(r'</script>', new_html))
-print(f"Script tags: {opens} opens, {closes} closes — {'OK' if opens==closes else 'MISMATCH - check HTML'}")
+opens  = len(re.findall(r'<script[^>]*>', new_html))
+closes = len(re.findall(r'</script>', new_html))
+print(f"Script tags: {opens} opens, {closes} closes — {'OK' if opens==closes else 'MISMATCH'}")
+if opens != closes:
+    print("ABORTING WRITE — structural mismatch detected, refusing to save corrupted file")
+    sys.exit(1)
 
 with open('index.html', 'w') as f:
     f.write(new_html)
 
-print(f"\n✅ index.html updated successfully!")
-print(f"   Size: {len(new_html)//1024}KB")
-print(f"   Data current as of: {max_month} (IST)")
-print(f"   Mills: {len(mills)} | iCheck records: {sum(1 for r in records if r[6] is not None)}")
-print(f"   Within range: {sum(1 for r in records if r[7]==2)}")
+print(f"\nindex.html updated successfully! Size: {len(new_html)//1024}KB")
+print(f"Data current as of: {max_month} (IST)")
